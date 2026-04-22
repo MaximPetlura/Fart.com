@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Fart Detector Pro 💨 - Стрілка вказує на джерело</title>
+    <style>
+        * {
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: linear-gradient(145deg, #1e2a2c 0%, #0f1a1c 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', 'Quicksand', system-ui, -apple-system, 'Roboto', sans-serif;
+            padding: 20px;
+        }
+
+        /* Головна картка детектора */
+        .detector-container {
+            background: #fef3da;
+            border-radius: 64px;
+            padding: 20px 24px 28px 24px;
+            box-shadow: 0 30px 35px -15px rgba(0,0,0,0.6), inset 0 1px 4px rgba(255,245,190,0.9);
+            transition: 0.2s;
+        }
+
+        canvas {
+            display: block;
+            margin: 0 auto;
+            border-radius: 36px;
+            box-shadow: 0 12px 28px rgba(0,0,0,0.3), inset 0 0 0 2px rgba(255,250,200,0.8);
+            cursor: crosshair;
+            background-color: #ffffff;
+            width: 100%;
+            height: auto;
+        }
+
+        .info-panel {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #e9ddbc;
+            border-radius: 60px;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .status-badge {
+            background: #2c3e2a;
+            padding: 8px 22px;
+            border-radius: 40px;
+            color: #ffec9f;
+            font-weight: bold;
+            letter-spacing: 1px;
+            font-size: 1rem;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.3), 0 2px 4px rgba(255,235,150,0.6);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-badge span {
+            font-size: 1.3rem;
+        }
+
+        button {
+            background: #5f7e4e;
+            border: none;
+            padding: 8px 24px;
+            border-radius: 40px;
+            font-weight: bold;
+            color: white;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: 0.1s linear;
+            box-shadow: 0 4px 0 #2c4424;
+            font-family: inherit;
+            letter-spacing: 0.5px;
+        }
+
+        button:active {
+            transform: translateY(2px);
+            box-shadow: 0 1px 0 #2c4424;
+        }
+
+        .counter {
+            background: #1f2e1c;
+            padding: 6px 18px;
+            border-radius: 32px;
+            color: #ffdf8c;
+            font-weight: bold;
+            font-size: 1.2rem;
+            font-family: monospace;
+        }
+
+        footer {
+            font-size: 0.7rem;
+            text-align: center;
+            margin-top: 14px;
+            color: #4f4a32;
+            font-weight: 500;
+        }
+
+        @media (max-width: 700px) {
+            .detector-container {
+                padding: 16px;
+                border-radius: 48px;
+            }
+            .status-badge { font-size: 0.8rem; padding: 5px 16px;}
+            .counter { font-size: 1rem; padding: 4px 14px;}
+        }
+
+        /* маленька анімація для індикатора */
+        @keyframes softPulse {
+            0% { text-shadow: 0 0 0 #ffb347; opacity: 0.7;}
+            100% { text-shadow: 0 0 6px #ff914d; opacity: 1;}
+        }
+        .fart-alert {
+            animation: softPulse 0.2s ease-out;
+        }
+    </style>
+</head>
+<body>
+<div>
+    <div class="detector-container">
+        <canvas id="fartCanvas" width="800" height="500" style="width:100%; height:auto; max-width:1000px; aspect-ratio:800/500"></canvas>
+        <div class="info-panel">
+            <div class="status-badge">
+                <span>🧭💨</span> ДЕТЕКТОР ПЕРДІННЯ
+            </div>
+            <div class="counter">
+                🎯 точка: <span id="pointIndicator">немає</span>
+            </div>
+            <button id="resetBtn">🗑️ Очистити</button>
+        </div>
+        <footer>👇 Клікни на біле полотно — стрілка повернеться до джерела звуку! Попередня точка зникає. 💨</footer>
+    </div>
+</div>
+
+<script>
+    (function() {
+        // ---------- НАЛАШТУВАННЯ CANVAS ----------
+        const canvas = document.getElementById('fartCanvas');
+        const ctx = canvas.getContext('2d');
+        const CANVAS_W = 800;
+        const CANVAS_H = 500;
+        canvas.width = CANVAS_W;
+        canvas.height = CANVAS_H;
+        
+        // ----- СТАН -----
+        let currentPoint = null;       // {x, y} або null (тільки одна остання точка)
+        let arrowAngle = 0;            // поточний кут стрілки (радіани, 0 = вгору)
+        let targetAngle = 0;           // кут, куди стрілка має дивитись (на точку)
+        let isRotating = false;         // чи виконується анімація повороту
+        let animFrameId = null;
+        let rotationStart = 0;
+        const ROTATION_MS = 500;        // 0.5 секунди
+        
+        let startRotAngle = 0;
+        let endRotAngle = 0;
+        
+        // Аудіо контекст (для fallback) та зовнішній звук з GitHub
+        let audioCtx = null;
+        let audioAllowed = false;
+        
+        // --- ВАШЕ ПОСИЛАННЯ НА ЗВУК (RAW GITHUB) ---
+        const FART_SOUND_URL = 'https://raw.githubusercontent.com/MaximPetlura/Fart.com/main/dry-fart.mp3';
+        let externalFartAudio = null;   // об'єкт Audio
+        
+        // ---------- ДОПОМІЖНІ ФУНКЦІЇ ----------
+        function getCenter() {
+            return { x: CANVAS_W/2, y: CANVAS_H/2 };
+        }
+        
+        // Обчислення кута від центру до точки (x,y), де 0 = вгору, позитивний = вправо
+        function getAngleToPoint(centerX, centerY, pointX, pointY) {
+            const dx = pointX - centerX;
+            const dy = pointY - centerY;
+            // atan2(dx, -dy): якщо точка вище центру (dy<0) дає кут 0, вправо -> PI/2
+            let angle = Math.atan2(dx, -dy);
+            return angle;
+        }
+        
+        // Оновлення текстового індикатора точки
+        function updatePointIndicator() {
+            const span = document.getElementById('pointIndicator');
+            if (span) {
+                if (currentPoint) {
+                    span.innerText = `x:${Math.round(currentPoint.x)} y:${Math.round(currentPoint.y)}`;
+                    span.style.color = "#ffae70";
+                } else {
+                    span.innerText = "немає";
+                    span.style.color = "#ffdf8c";
+                }
+            }
+        }
+        
+        // ---------- МАЛЮВАННЯ ВСЬОГО (фон, точка, стрілка) ----------
+        function drawCanvas() {
+            if (!ctx) return;
+            ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+            
+            // 1. Біле полотно + легка сітка
+            ctx.fillStyle = "#FFFFFF";
+            ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+            ctx.save();
+            ctx.strokeStyle = "#e0e0e0";
+            ctx.lineWidth = 1;
+            for (let i = 0; i < CANVAS_W; i += 40) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, CANVAS_H);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(CANVAS_W, i);
+                ctx.stroke();
+            }
+            
+            // 2. Якщо є поточна точка — малюємо червону точку з ефектом "свіжого пердіння"
+            if (currentPoint) {
+                const px = currentPoint.x;
+                const py = currentPoint.y;
+                // зовнішнє кільце
+                ctx.beginPath();
+                ctx.arc(px, py, 12, 0, Math.PI*2);
+                ctx.fillStyle = "#E34234";
+                ctx.shadowBlur = 6;
+                ctx.shadowColor = "rgba(200, 60, 40, 0.5)";
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(px, py, 6, 0, Math.PI*2);
+                ctx.fillStyle = "#ff7f4a";
+                ctx.fill();
+                // маленький яскравий центр
+                ctx.beginPath();
+                ctx.arc(px-1, py-1, 3, 0, Math.PI*2);
+                ctx.fillStyle = "#ffb347";
+                ctx.fill();
+                ctx.shadowColor = "transparent";
+                // легка пара (ефект димка)
+                ctx.beginPath();
+                ctx.arc(px-3, py-4, 4, 0, Math.PI*2);
+                ctx.fillStyle = "#ffccaa88";
+                ctx.fill();
+            }
+            
+            // 3. Малюємо центральну стрілку (залежить від arrowAngle)
+            const center = getCenter();
+            const arrowLen = 46;
+            const headSize = 18;
+            const currAngle = arrowAngle;
+            
+            // вістря
+            const tipX = center.x + Math.sin(currAngle) * arrowLen;
+            const tipY = center.y - Math.cos(currAngle) * arrowLen;
+            // база (трохи від центру)
+            const backX = center.x - Math.sin(currAngle) * (arrowLen * 0.2);
+            const backY = center.y + Math.cos(currAngle) * (arrowLen * 0.2);
+            
+            ctx.beginPath();
+            ctx.moveTo(backX, backY);
+            ctx.lineTo(tipX, tipY);
+            ctx.lineWidth = 5;
+            ctx.strokeStyle = "#1E2F2F";
+            ctx.shadowBlur = 3;
+            ctx.stroke();
+            
+            // наконечник (вуса)
+            const wingAng = Math.PI / 5.5;
+            const leftX = tipX - Math.sin(currAngle - wingAng) * headSize;
+            const leftY = tipY + Math.cos(currAngle - wingAng) * headSize;
+            const rightX = tipX - Math.sin(currAngle + wingAng) * headSize;
+            const rightY = tipY + Math.cos(currAngle + wingAng) * headSize;
+            
+            ctx.beginPath();
+            ctx.moveTo(tipX, tipY);
+            ctx.lineTo(leftX, leftY);
+            ctx.lineTo(rightX, rightY);
+            ctx.fillStyle = "#253b2b";
+            ctx.fill();
+            
+            // центральна вісь / декоративне коло
+            ctx.beginPath();
+            ctx.arc(center.x, center.y, 9, 0, Math.PI*2);
+            ctx.fillStyle = "#4f6b3c";
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(center.x, center.y, 4, 0, Math.PI*2);
+            ctx.fillStyle = "#f3c969";
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            
+            // підпис
+            ctx.font = "bold 11px 'Segoe UI'";
+            ctx.fillStyle = "#9b875a";
+            ctx.fillText("🎯 клікни, щоб засікти пердіння", 18, CANVAS_H-14);
+            ctx.restore();
+        }
+        
+        // ---------- АНІМАЦІЯ ПОВОРОТУ (0.5 сек) ----------
+        function startRotationAnimation(newTargetAngle) {
+            if (animFrameId) {
+                cancelAnimationFrame(animFrameId);
+                animFrameId = null;
+            }
+            // поточний кут стає стартовим
+            startRotAngle = arrowAngle;
+            endRotAngle = newTargetAngle;
+            rotationStart = performance.now();
+            isRotating = true;
+            
+            function step(now) {
+                const elapsed = now - rotationStart;
+                let t = Math.min(1, elapsed / ROTATION_MS);
+                // easeOutCubic для приємного руху
+                const ease = 1 - Math.pow(1 - t, 3);
+                let newAngle = lerpAngle(startRotAngle, endRotAngle, ease);
+                arrowAngle = newAngle;
+                drawCanvas();
+                if (t < 1) {
+                    animFrameId = requestAnimationFrame(step);
+                } else {
+                    arrowAngle = endRotAngle;
+                    drawCanvas();
+                    isRotating = false;
+                    animFrameId = null;
+                }
+            }
+            animFrameId = requestAnimationFrame(step);
+        }
+        
+        // Лінійна інтерполяція кутів з найкоротшим шляхом
+        function lerpAngle(a, b, t) {
+            const diff = ((b - a) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+            const shortest = diff > Math.PI ? diff - (Math.PI * 2) : diff;
+            return a + shortest * t;
+        }
+        
+        // ---------- ЗВУК (з GitHub + fallback) ----------
+        function initExternalAudio() {
+            if (!externalFartAudio) {
+                externalFartAudio = new Audio(FART_SOUND_URL);
+                externalFartAudio.preload = 'auto';
+                // щоб уникнути помилок CORS — додаємо атрибут (не обов'язково, але безпечно)
+                externalFartAudio.crossOrigin = "Anonymous";
+            }
+        }
+        
+        // Головний програвач звуку (використовує ваш dry-fart.mp3)
+        function playFartSFX() {
+            if (!audioAllowed) return;
+            try {
+                initExternalAudio();
+                // Клонуємо щоб дозволити швидкі повторення
+                const soundClone = externalFartAudio.cloneNode();
+                soundClone.volume = 0.65;
+                soundClone.play().catch(err => {
+                    console.warn("Не вдалося відтворити GitHub звук, використовую синтез:", err);
+                    playSynthesizedFallback();
+                });
+            } catch (e) {
+                console.warn("Помилка зовнішнього аудіо:", e);
+                playSynthesizedFallback();
+            }
+        }
+        
+        // Синтезований звук (якщо GitHub звук недоступний)
+        function playSynthesizedFallback() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(e => console.log);
+            }
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = "sawtooth";
+            osc.frequency.setValueAtTime(135, now);
+            osc.frequency.exponentialRampToValueAtTime(55, now + 0.45);
+            gain.gain.setValueAtTime(0.32, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(now + 0.45);
+            // додатковий низькочастотний "пук"
+            const noiseGain = audioCtx.createGain();
+            noiseGain.gain.setValueAtTime(0.2, now);
+            noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+            // швидкий білий шум через buffer
+            const bufferSize = 2048;
+            const scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+            scriptNode.onaudioprocess = function(e) {
+                const out = e.outputBuffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    out[i] = (Math.random() - 0.5) * 0.9;
+                }
+                scriptNode.disconnect();
+            };
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = "lowpass";
+            filter.frequency.value = 220;
+            scriptNode.connect(filter);
+            filter.connect(noiseGain);
+            noiseGain.connect(audioCtx.destination);
+            scriptNode.connect(filter);
+            setTimeout(() => {
+                try { scriptNode.disconnect(); } catch(e) {}
+            }, 400);
+        }
+        
+        // ----- ОСНОВНА ЛОГІКА ДОДАВАННЯ ТОЧКИ (стара зникає) -----
+        function setNewPointAndRotate(x, y) {
+            // 1. Замінюємо точку: попередня зникає (залишається тільки одна)
+            currentPoint = { x: x, y: y };
+            updatePointIndicator();
+            
+            // 2. Програємо звук (ваш dry-fart.mp3 з GitHub)
+            playFartSFX();
+            
+            // 3. Обчислюємо новий цільовий кут (від центру до точки)
+            const center = getCenter();
+            const newTarget = getAngleToPoint(center.x, center.y, x, y);
+            targetAngle = newTarget;
+            
+            // 4. Запускаємо анімацію повороту стрілки (0.5 секунди)
+            //    Якщо вже анімується - перериваємо поточну і запускаємо нову
+            if (isRotating) {
+                if (animFrameId) {
+                    cancelAnimationFrame(animFrameId);
+                    animFrameId = null;
+                }
+                isRotating = false;
+            }
+            startRotationAnimation(targetAngle);
+            
+            // Додатково: легкий візуальний фідбек (блимання лічильника)
+            const indicatorSpan = document.getElementById('pointIndicator');
+            if (indicatorSpan) {
+                indicatorSpan.classList.add('fart-alert');
+                setTimeout(() => {
+                    if(indicatorSpan) indicatorSpan.classList.remove('fart-alert');
+                }, 200);
+            }
+        }
+        
+        // Скидання: видаляємо точку, стрілка повертається у вихідне положення (вгору = 0)
+        function resetEverything() {
+            // видаляємо поточну точку
+            currentPoint = null;
+            updatePointIndicator();
+            
+            // Якщо анімація активна - зупиняємо
+            if (animFrameId) {
+                cancelAnimationFrame(animFrameId);
+                animFrameId = null;
+            }
+            isRotating = false;
+            // Стрілка дивиться вгору
+            arrowAngle = 0;
+            targetAngle = 0;
+            drawCanvas();
+        }
+        
+        // ---------- ОБРОБНИК КЛІКУ НА CANVAS ----------
+        function handleCanvasInteraction(e) {
+            // Активуємо аудіо при першому дотику/кліку
+            if (!audioAllowed) {
+                audioAllowed = true;
+                // підготовка аудіоконтексту для fallback, ініціалізація зовнішнього аудіо
+                if (!audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume().catch(err => console.log);
+                }
+                initExternalAudio(); // попереднє завантаження
+            }
+            
+            // Отримуємо координати кліку (миша або тач)
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            let clientX, clientY;
+            if (e.touches) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+                e.preventDefault();
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            
+            let canvasX = (clientX - rect.left) * scaleX;
+            let canvasY = (clientY - rect.top) * scaleY;
+            
+            canvasX = Math.min(Math.max(0, canvasX), CANVAS_W);
+            canvasY = Math.min(Math.max(0, canvasY), CANVAS_H);
+            
+            const center = getCenter();
+            const distToCenter = Math.hypot(canvasX - center.x, canvasY - center.y);
+            // якщо клікнули в центр (радіус ~18px) - ігноруємо створення точки, але можна нічого не робити
+            if (distToCenter < 20) {
+                // за бажанням не створюємо точку, щоб не блокувати стрілку
+                return;
+            }
+            
+            // Створюємо нову точку (стара зникне)
+            setNewPointAndRotate(canvasX, canvasY);
+        }
+        
+        // Підписуємось на події
+        canvas.addEventListener('click', handleCanvasInteraction);
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (e.touches.length) {
+                handleCanvasInteraction(e);
+            }
+        });
+        
+        // Кнопка очищення
+        const resetBtn = document.getElementById('resetBtn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                resetEverything();
+                // додатковий мікрофідбек звуком не робимо, просто чистимо
+            });
+        }
+        
+        // Первинний малюнок
+        resetEverything();
+        
+        // Глобальний хендлер активації аудіо (на випадок, якщо перший клік поза canvas)
+        function globalAudioUnlock() {
+            if (!audioAllowed) {
+                audioAllowed = true;
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+                else if (!audioCtx) audioCtx = new AudioContext();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                initExternalAudio();
+                document.removeEventListener('click', globalAudioUnlock);
+                document.removeEventListener('touchstart', globalAudioUnlock);
+            }
+        }
+        document.addEventListener('click', globalAudioUnlock);
+        document.addEventListener('touchstart', globalAudioUnlock);
+        
+        // Якщо потрібно перемалювати при зміні розміру (зберігаємо пропорції)
+        window.addEventListener('resize', () => drawCanvas());
+    })();
+</script>
+</body>
+</html>
