@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Fart Detector Pro 💨 - Голосовий компас</title>
+    <title>Fart Detector Pro 💨 - Голосовий компас (затримка 1с)</title>
     <style>
         * {
             user-select: none;
@@ -98,15 +98,17 @@
             font-family: monospace;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 12px;
+            flex-wrap: wrap;
         }
 
         .direction-badge {
             background: #3a2e1f;
-            padding: 4px 12px;
+            padding: 4px 14px;
             border-radius: 32px;
             font-size: 0.9rem;
             color: #ffcc88;
+            font-family: sans-serif;
         }
 
         footer {
@@ -144,7 +146,7 @@
             </div>
             <button id="resetBtn">🗑️ Очистити</button>
         </div>
-        <footer>👇 Клікни на полотно → звук + стрілка вказує напрямок → голос промовляє: North / East / South / West</footer>
+        <footer>👇 Клікни → звук + стрілка → через 1 секунду голос скаже напрямок (North/East/South/West)</footer>
     </div>
 </div>
 
@@ -158,33 +160,34 @@
         canvas.width = CANVAS_W;
         canvas.height = CANVAS_H;
         
-        // Глобальний стан
-        let currentPoint = null;        // {x, y}
-        let arrowAngle = 0;              // радіани (0 = вгору/North)
+        // ----- СТАН -----
+        let currentPoint = null;
+        let arrowAngle = 0;
         let targetAngle = 0;
         let isRotating = false;
         let animFrameId = null;
         let rotationStart = 0;
         const ROTATION_MS = 500;
-        let startRotAngle = 0, endRotAngle = 0;
         
-        // Аудіо дозвіл та звук пердіння (Pixabay)
+        let startRotAngle = 0;
+        let endRotAngle = 0;
+        
+        // Аудіо дозвіл
         let audioAllowed = false;
-        const FART_SOUND_URL = 'https://cdn.pixabay.com/download/audio/2022/03/02/audio_d0b2c1e0f2.mp3';
-        let fartAudio = null;
+        let audioCtx = null;
         
-        // ----- ФУНКЦІЯ ВИЗНАЧЕННЯ НАПРЯМКУ (кут в радіанах -> текст) ----
-        // Діапазони (в градусах):
-        // 316° – 45°  -> North
-        // 46°  – 135° -> East
-        // 136° – 225° -> South
-        // 226° – 315° -> West
+        // --- ЗВУК З GITHUB ---
+        const FART_SOUND_URL = 'https://raw.githubusercontent.com/MaximPetlura/Fart.com/main/dry-fart.mp3';
+        let externalFartAudio = null;
+        
+        // --- Таймер для голосу ---
+        let voiceTimeout = null;
+        
+        // ---------- ФУНКЦІЯ НАПРЯМКУ (кут -> текст) ----------
         function getDirectionFromAngle(radians) {
-            // Переводимо в градуси, нормалізуємо 0..360
             let degrees = radians * 180 / Math.PI;
             degrees = (degrees + 360) % 360;
             
-            // Перевірка секторів
             if ((degrees >= 316 && degrees <= 360) || (degrees >= 0 && degrees <= 45)) {
                 return "North";
             } else if (degrees >= 46 && degrees <= 135) {
@@ -193,18 +196,13 @@
                 return "South";
             } else if (degrees >= 226 && degrees <= 315) {
                 return "West";
-            } else {
-                return "North"; // fallback
             }
+            return "North";
         }
         
-        // Голосове сповіщення (Web Speech API)
+        // Голосове сповіщення (без затримки – викликається через таймаут)
         function speakDirection(direction) {
-            if (!window.speechSynthesis) {
-                console.warn("SpeechSynthesis не підтримується");
-                return;
-            }
-            // Зупиняємо попередні повідомлення, щоб не накладалися
+            if (!window.speechSynthesis) return;
             window.speechSynthesis.cancel();
             const utterance = new SpeechSynthesisUtterance(direction);
             utterance.lang = 'en-US';
@@ -213,7 +211,6 @@
             utterance.volume = 0.8;
             window.speechSynthesis.speak(utterance);
             
-            // Візуальний фідбек (підсвітка напрямку)
             const dirSpan = document.getElementById('directionText');
             if (dirSpan) {
                 dirSpan.style.backgroundColor = "#5f7e4e";
@@ -223,7 +220,6 @@
             }
         }
         
-        // Оновлюємо текст напрямку в інтерфейсі
         function updateDirectionDisplay(direction) {
             const dirSpan = document.getElementById('directionText');
             if (dirSpan) dirSpan.innerText = direction;
@@ -234,7 +230,6 @@
             return { x: CANVAS_W/2, y: CANVAS_H/2 };
         }
         
-        // Кут від центру до точки: 0 = вгору (North), +PI/2 = вправо (East)
         function getAngleToPoint(centerX, centerY, pointX, pointY) {
             const dx = pointX - centerX;
             const dy = pointY - centerY;
@@ -254,11 +249,10 @@
             }
         }
         
-        // ---------- МАЛЮВАННЯ (стрілка, точки, сітка) ----------
+        // ---------- МАЛЮВАННЯ ----------
         function drawCanvas() {
             if (!ctx) return;
             ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-            
             ctx.fillStyle = "#FFFFFF";
             ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
             ctx.save();
@@ -275,7 +269,6 @@
                 ctx.stroke();
             }
             
-            // Червона точка
             if (currentPoint) {
                 const px = currentPoint.x;
                 const py = currentPoint.y;
@@ -300,7 +293,6 @@
                 ctx.fill();
             }
             
-            // Стрілка
             const center = getCenter();
             const arrowLen = 46;
             const headSize = 18;
@@ -344,16 +336,13 @@
             
             ctx.font = "bold 11px 'Segoe UI'";
             ctx.fillStyle = "#9b875a";
-            ctx.fillText("🎯 клікни → звук + компас", 18, CANVAS_H-14);
+            ctx.fillText("🎯 клікни → звук + стрілка → голос через 1с", 18, CANVAS_H-14);
             ctx.restore();
         }
         
         // Анімація повороту
         function startRotationAnimation(newTargetAngle) {
-            if (animFrameId) {
-                cancelAnimationFrame(animFrameId);
-                animFrameId = null;
-            }
+            if (animFrameId) cancelAnimationFrame(animFrameId);
             startRotAngle = arrowAngle;
             endRotAngle = newTargetAngle;
             rotationStart = performance.now();
@@ -384,53 +373,78 @@
             return a + shortest * t;
         }
         
-        // ---------- ЗВУК ПЕРДІННЯ (Pixabay) ----------
-        function initFartAudio() {
-            if (!fartAudio) {
-                fartAudio = new Audio(FART_SOUND_URL);
-                fartAudio.preload = 'auto';
+        // ---------- ЗВУК ----------
+        function initExternalAudio() {
+            if (!externalFartAudio) {
+                externalFartAudio = new Audio(FART_SOUND_URL);
+                externalFartAudio.preload = 'auto';
+                externalFartAudio.crossOrigin = "Anonymous";
             }
         }
         
         function playFartSFX() {
             if (!audioAllowed) return;
             try {
-                initFartAudio();
-                const soundClone = fartAudio.cloneNode();
-                soundClone.volume = 0.7;
-                soundClone.play().catch(e => console.warn("SFX помилка:", e));
-            } catch(e) { console.warn(e); }
+                initExternalAudio();
+                const soundClone = externalFartAudio.cloneNode();
+                soundClone.volume = 0.65;
+                soundClone.play().catch(err => {
+                    console.warn("GitHub звук не грає:", err);
+                    playSynthesizedFallback();
+                });
+            } catch(e) {
+                playSynthesizedFallback();
+            }
         }
         
-        // ----- ОСНОВНА ЛОГІКА (нова точка + голос) -----
+        function playSynthesizedFallback() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = "sawtooth";
+            osc.frequency.setValueAtTime(135, now);
+            osc.frequency.exponentialRampToValueAtTime(55, now + 0.45);
+            gain.gain.setValueAtTime(0.32, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(now + 0.45);
+        }
+        
+        // ----- ОСНОВНА ЛОГІКА (з затримкою голосу 1 секунда) -----
         function setNewPointAndRotate(x, y) {
-            // Оновлюємо точку
+            // Скасовуємо попередній таймер голосу, якщо він ще не спрацював
+            if (voiceTimeout) {
+                clearTimeout(voiceTimeout);
+                voiceTimeout = null;
+            }
+            
             currentPoint = { x, y };
             updatePointIndicator();
-            
-            // Відтворюємо "пердіння"
             playFartSFX();
             
-            // Обчислюємо кут від центру до точки
             const center = getCenter();
             const angleRad = getAngleToPoint(center.x, center.y, x, y);
             targetAngle = angleRad;
             
-            // Визначаємо напрямок (North/East/South/West)
             const direction = getDirectionFromAngle(angleRad);
             updateDirectionDisplay(direction);
             
-            // Голосове сповіщення (промовляє напрямок)
-            speakDirection(direction);
+            // Відкладене голосове повідомлення через 1 секунду
+            voiceTimeout = setTimeout(() => {
+                speakDirection(direction);
+                voiceTimeout = null;
+            }, 500);
             
-            // Анімація повороту стрілки
             if (isRotating) {
                 if (animFrameId) cancelAnimationFrame(animFrameId);
                 isRotating = false;
             }
             startRotationAnimation(targetAngle);
             
-            // Візуальний пульс
             const indicatorSpan = document.getElementById('pointIndicator');
             if (indicatorSpan) {
                 indicatorSpan.classList.add('fart-alert');
@@ -439,39 +453,40 @@
         }
         
         function resetEverything() {
+            // Скасовуємо запланований голос
+            if (voiceTimeout) {
+                clearTimeout(voiceTimeout);
+                voiceTimeout = null;
+            }
+            // Зупиняємо поточну мову
+            if (window.speechSynthesis) window.speechSynthesis.cancel();
+            
             currentPoint = null;
             updatePointIndicator();
             updateDirectionDisplay("---");
-            if (animFrameId) {
-                cancelAnimationFrame(animFrameId);
-                animFrameId = null;
-            }
+            if (animFrameId) cancelAnimationFrame(animFrameId);
             isRotating = false;
             arrowAngle = 0;
             targetAngle = 0;
             drawCanvas();
-            // Скасовуємо голос, якщо щось говорило
-            if (window.speechSynthesis) window.speechSynthesis.cancel();
         }
         
-        // ---------- ОБРОБКА КЛІКУ НА CANVAS ----------
+        // ---------- ОБРОБНИК КЛІКУ ----------
         function handleCanvasInteraction(e) {
             if (!audioAllowed) {
                 audioAllowed = true;
-                initFartAudio();
-                if (fartAudio) fartAudio.load();
-                // також активуємо голос (speechSynthesis іноді вимагає жесту)
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                initExternalAudio();
                 if (window.speechSynthesis) {
-                    window.speechSynthesis.cancel();
-                    const temp = new SpeechSynthesisUtterance(" ");
-                    window.speechSynthesis.speak(temp);
+                    const dummy = new SpeechSynthesisUtterance(" ");
+                    window.speechSynthesis.speak(dummy);
                 }
             }
             
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
             const scaleY = canvas.height / rect.height;
-            
             let clientX, clientY;
             if (e.touches) {
                 clientX = e.touches[0].clientX;
@@ -488,7 +503,7 @@
             canvasY = Math.min(Math.max(0, canvasY), CANVAS_H);
             
             const center = getCenter();
-            if (Math.hypot(canvasX - center.x, canvasY - center.y) < 20) return; // клік по центру ігноруємо
+            if (Math.hypot(canvasX - center.x, canvasY - center.y) < 20) return;
             
             setNewPointAndRotate(canvasX, canvasY);
         }
@@ -501,25 +516,25 @@
         
         document.getElementById('resetBtn').addEventListener('click', () => resetEverything());
         
-        // Ініціалізація
         resetEverything();
         
-        // Розблокування аудіо/голосу при першому дотику до сторінки
-        function globalUnlock() {
+        function globalAudioUnlock() {
             if (!audioAllowed) {
                 audioAllowed = true;
-                initFartAudio();
-                if (fartAudio) fartAudio.load();
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+                else if (!audioCtx) audioCtx = new AudioContext();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                initExternalAudio();
                 if (window.speechSynthesis) {
                     const dummy = new SpeechSynthesisUtterance(" ");
                     window.speechSynthesis.speak(dummy);
                 }
-                document.removeEventListener('click', globalUnlock);
-                document.removeEventListener('touchstart', globalUnlock);
+                document.removeEventListener('click', globalAudioUnlock);
+                document.removeEventListener('touchstart', globalAudioUnlock);
             }
         }
-        document.addEventListener('click', globalUnlock);
-        document.addEventListener('touchstart', globalUnlock);
+        document.addEventListener('click', globalAudioUnlock);
+        document.addEventListener('touchstart', globalAudioUnlock);
         
         window.addEventListener('resize', () => drawCanvas());
     })();
